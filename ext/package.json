@@ -1,0 +1,43 @@
+{
+  "name": "planner-ai-ext",
+  "displayName": "Planner AI Agent",
+  "description": "VS Code extension to consume AI planning agent",
+  "version": "0.0.1",
+  "publisher": "your-name",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "activationEvents": [
+    "onCommand:planner-ai.showUI"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "planner-ai.showUI",
+        "title": "Show Planner AI UI"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.125.0",
+    "tslint": "^6.1.3",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "axios": "^1.18.1",
+    "better-sqlite3": "^12.11.1",
+    "crypto": "^1.0.1",
+    "sqlite3": "^6.0.1",
+    "tree-sitter": "^0.21.0",
+    "tree-sitter-c-sharp": "^0.23.5",
+    "tree-sitter-typescript": "^0.23.2"
+  }
+}

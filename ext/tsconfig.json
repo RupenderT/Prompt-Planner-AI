@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "module": "nodenext",              // use Node’s ESM resolution
+    "moduleResolution": "nodenext",    // critical for resolving axios, sqlite, tree-sitter, etc.
+    "target": "es2020",
+    "outDir": "dist",
+    "lib": ["es2020","dom"],
+    "sourceMap": true,
+    "rootDir": "src",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true
+  },
+  "include": ["src", "src/types/**/*.d.ts"]
+}
