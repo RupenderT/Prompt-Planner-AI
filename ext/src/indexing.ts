@@ -10,11 +10,6 @@ import Database from "better-sqlite3";
 //import CSharp from "tree-sitter-c-sharp";
 
 
-import Parser from "tree-sitter";
-
-const { typescript, tsx } = await import("tree-sitter-typescript");
-// tree-sitter-c-sharp exports its language as the default
-const csharp = (await import("tree-sitter-c-sharp")).default;
 
 
 const db = new Database("codeindex2.db");
@@ -186,17 +181,17 @@ function getLanguage(filePath: string) {
     return null;
 }
 
-function buildParser(language: string) {
-    const parser = new Parser();
+// function buildParser(language: string) {
+//     const parser = new Parser();
 
-    if (language === "csharp") {
-        parser.setLanguage(csharp);
-    } else {
-        parser.setLanguage(typescript);
-    }
+//     if (language === "csharp") {
+//         parser.setLanguage(csharp);
+//     } else {
+//         parser.setLanguage(typescript);
+//     }
 
-    return parser;
-}
+//     return parser;
+// }
 async function indexFile(filePath: string) {
     const language = getLanguage(filePath);
     if (!language) return;

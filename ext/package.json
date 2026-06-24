@@ -35,9 +35,6 @@
     "axios": "^1.18.1",
     "better-sqlite3": "^12.11.1",
     "crypto": "^1.0.1",
-    "sqlite3": "^6.0.1",
-    "tree-sitter": "^0.21.0",
-    "tree-sitter-c-sharp": "^0.23.5",
-    "tree-sitter-typescript": "^0.23.2"
+    "sqlite3": "^6.0.1"
   }
 }
