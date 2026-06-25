@@ -2,8 +2,7 @@ import * as vscode from "vscode";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-
-import Database from "better-sqlite3";
+import initSqlJs from 'sql.js';
 
 // import Parser from "tree-sitter";
 // import { typescript } from "tree-sitter-typescript";
@@ -12,75 +11,100 @@ import Database from "better-sqlite3";
 
 
 
-const db = new Database("codeindex2.db");
+let db: any = null;
+let SQL: any = null;
+let DB_FILE: string = '';
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS files(
-    id INTEGER PRIMARY KEY,
-    path TEXT UNIQUE,
-    language TEXT,
-    modified_time INTEGER
-);
+export function setStoragePath(workspacePath: string) {
+    DB_FILE = path.join(workspacePath, 'codeindex2.db');
+}
 
-CREATE TABLE IF NOT EXISTS symbols(
-    id INTEGER PRIMARY KEY,
-    file_id INTEGER,
-    name TEXT,
-    type TEXT,
-    start_line INTEGER,
-    end_line INTEGER
-);
+async function initDatabase() {
+    if (db) return db;
+    
+    if (!DB_FILE) {
+        throw new Error('Storage path not set. Call setStoragePath() first.');
+    }
+    
+    SQL = await initSqlJs();
 
-CREATE TABLE IF NOT EXISTS dependencies(
-    id INTEGER PRIMARY KEY,
-    file_id INTEGER,
-    dependency TEXT
-);
-CREATE TABLE IF NOT EXISTS chunks(
-    id INTEGER PRIMARY KEY,
-    file_id INTEGER,
-    symbol_name TEXT,
-    symbol_type TEXT,
-    file_path TEXT,
-    start_line INTEGER,
-    end_line INTEGER,
-    hash TEXT,
-    embedding TEXT
-);
+    if (fs.existsSync(DB_FILE)) {
+        const buf = fs.readFileSync(DB_FILE);
+        db = new SQL.Database(new Uint8Array(buf));
+    } else {
+        db = new SQL.Database();
+    }
 
-CREATE TABLE IF NOT EXISTS embeddings (
-    path TEXT,
-    chunk_index INTEGER,
-    hash TEXT,
-    embedding TEXT,
-    PRIMARY KEY (path, chunk_index)
-);
-`);
+    // ensure tables exist
+    db.run(`
+    CREATE TABLE IF NOT EXISTS files(
+        id INTEGER PRIMARY KEY,
+        path TEXT UNIQUE,
+        language TEXT,
+        modified_time INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS symbols(
+        id INTEGER PRIMARY KEY,
+        file_id INTEGER,
+        name TEXT,
+        type TEXT,
+        start_line INTEGER,
+        end_line INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS dependencies(
+        id INTEGER PRIMARY KEY,
+        file_id INTEGER,
+        dependency TEXT
+    );
+    CREATE TABLE IF NOT EXISTS chunks(
+        id INTEGER PRIMARY KEY,
+        file_id INTEGER,
+        symbol_name TEXT,
+        symbol_type TEXT,
+        file_path TEXT,
+        start_line INTEGER,
+        end_line INTEGER,
+        hash TEXT,
+        embedding TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS embeddings (
+        path TEXT,
+        chunk_index INTEGER,
+        hash TEXT,
+        embedding TEXT,
+        PRIMARY KEY (path, chunk_index)
+    );
+    `);
+
+    persistDb();
+    return db;
+}
+
+function persistDb() {
+    if (!db) return;
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_FILE, buffer);
+}
 
 
-export function printTableCounts() {
-    const tables = [
-        "files",
-        "symbols",
-        "dependencies",
-        "chunks",
-        "embeddings"
-    ];
-
+export async function printTableCounts() {
+    await initDatabase();
+    const tables = ["files", "symbols", "dependencies", "chunks", "embeddings"];
     for (const table of tables) {
         const stmt = db.prepare(`SELECT COUNT(*) as count FROM ${table}`);
-        const row = stmt.get();
-        console.log(`${table}: ${row.count}`);
+        let row: any = null;
+        if (stmt.step()) row = stmt.getAsObject();
+        stmt.free();
+        console.log(`${table}: ${row?.count ?? 0}`);
     }
 }
 
-const insertFile = db.prepare(`
-INSERT OR REPLACE INTO files(path, language, modified_time)
-VALUES (?, ?, ?)
- ON CONFLICT(path)
-DO UPDATE SET modified_time = excluded.modified_time
-`);
-function upsertFile(filePath: string, language: string, mtime: number) {
+async function upsertFile(filePath: string, language: string, mtime: number) {
+    await initDatabase();
     const stmt = db.prepare(`
         INSERT INTO files(path, language, modified_time)
         VALUES (?, ?, ?)
@@ -89,13 +113,15 @@ function upsertFile(filePath: string, language: string, mtime: number) {
             language = excluded.language,
             modified_time = excluded.modified_time
     `);
-
-    stmt.run(filePath, language, mtime);
-    return true; // synchronous, no Promise needed
+    stmt.bind([filePath, language, mtime]);
+    stmt.step();
+    stmt.free();
+    persistDb();
+    return true;
 }
 
-function insertChunk(chunk: any) {
-
+async function insertChunk(chunk: any) {
+    await initDatabase();
     const stmt = db.prepare(`INSERT INTO chunks(
         file_id,
         symbol_name,
@@ -105,59 +131,76 @@ function insertChunk(chunk: any) {
         hash,
         embedding
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?)`
-    );
-   
-        stmt.run(
-            chunk.file_id,
-            chunk.symbol_name,
-            chunk.symbol_type,
-            chunk.start_line,
-            chunk.end_line,
-            chunk.hash,
-            chunk.embedding,
-        );
+      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    stmt.bind([
+        chunk.file_id,
+        chunk.symbol_name,
+        chunk.symbol_type,
+        chunk.start_line,
+        chunk.end_line,
+        chunk.hash,
+        chunk.embedding
+    ]);
+    stmt.step();
+    stmt.free();
+    persistDb();
 }
-const getFileId = db.prepare(`
-SELECT id FROM files WHERE path = ?
-`);
+async function getFileIdForPath(filePath: string) {
+    await initDatabase();
+    const stmt = db.prepare(`SELECT id FROM files WHERE path = ?`);
+    stmt.bind([filePath]);
+    let row = null;
+    if (stmt.step()) row = stmt.getAsObject();
+    stmt.free();
+    return row?.id;
+}
 
-const getAllDBFiles = db.prepare(`
-SELECT path, language, modified_time FROM files
-`);
+async function findFileByPathSQL(filePath: string) {
+    await initDatabase();
+    const stmt = db.prepare(`SELECT path, language, modified_time FROM files WHERE path = ?`);
+    stmt.bind([filePath]);
+    let row = null;
+    if (stmt.step()) row = stmt.getAsObject();
+    stmt.free();
+    return row;
+}
 
-const findFileByPath = db.prepare(`
- SELECT path,language,modified_time FROM files WHERE path = ?
-`);
+async function getAllChunksSQL() {
+    await initDatabase();
+    const stmt = db.prepare(`SELECT * FROM chunks`);
+    const rows: any[] = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    stmt.free();
+    return rows;
+}
 
-const getAllChunks = db.prepare(`
-SELECT * FROM chunks
-`);
+async function getDBChunkByIdSQL(id: any) {
+    await initDatabase();
+    const stmt = db.prepare(`SELECT * FROM chunks join files ON chunks.file_id = files.id WHERE chunks.id = ?`);
+    stmt.bind([id]);
+    let row = null;
+    if (stmt.step()) row = stmt.getAsObject();
+    stmt.free();
+    return row;
+}
 
-const getDBChunkById = db.prepare(`
-SELECT * FROM chunks
-join files ON chunks.file_id = files.id
- WHERE chunks.id = ?
-`);
+async function insertSymbolSQL(file_id: number, name: string, type: string, start_line: number, end_line: number) {
+    await initDatabase();
+    const stmt = db.prepare(`INSERT INTO symbols(file_id, name, type, start_line, end_line) VALUES (?, ?, ?, ?, ?)`);
+    stmt.bind([file_id, name, type, start_line, end_line]);
+    stmt.step();
+    stmt.free();
+    persistDb();
+}
 
-const insertSymbol = db.prepare(`
-INSERT INTO symbols(
-    file_id,
-    name,
-    type,
-    start_line,
-    end_line
-)
-VALUES (?, ?, ?, ?, ?)
-`);
-
-const insertDependency = db.prepare(`
-INSERT INTO dependencies(
-    file_id,
-    dependency
-)
-VALUES (?, ?)
-`);
+async function insertDependencySQL(file_id: number, dependency: string) {
+    await initDatabase();
+    const stmt = db.prepare(`INSERT INTO dependencies(file_id, dependency) VALUES (?, ?)`);
+    stmt.bind([file_id, dependency]);
+    stmt.step();
+    stmt.free();
+    persistDb();
+}
 
 // const insertChunk = db.prepare(`
 // INSERT INTO chunks(
@@ -200,7 +243,7 @@ async function indexFile(filePath: string) {
     const currentMtime = stat.mtimeMs;
 
     // Check DB for existing modified_time
-    const filerow = findFileByPath.get(filePath) as any;
+    const filerow = await findFileByPathSQL(filePath) as any;
 
     if (filerow) {
         console.error(filerow);
@@ -219,8 +262,7 @@ async function indexFile(filePath: string) {
     console.log(`upserting file: ${filePath} (language: ${language})`);
     await upsertFile(filePath, language, stat.mtimeMs);
     console.log(`upserted file: ${filePath} (language: ${language})`);
-    const row = getFileId.get(filePath) as any;
-    const fileId = row.id;
+    const fileId = await getFileIdForPath(filePath) as any;
     console.log(`fileId for ${filePath}: ${fileId}`);
     const doc = await vscode.workspace.openTextDocument(filePath);
     console.log(`Opened document for ${filePath}, languageId: ${doc.languageId}`);
@@ -308,16 +350,7 @@ async function handleSymbolLSP({
     const symbolType = mapSymbolKind(symbol.kind);
     console.log(`Symbol type for ${symbol.name}: ${symbolType}`);
     // insert symbol metadata
-    const insertSymbolStmt = db.prepare(
-        "INSERT OR REPLACE INTO symbols (file_id, name, type, start_line, end_line) VALUES (?, ?, ?, ?, ?)"
-    );
-    insertSymbolStmt.run(
-        fileId,
-        symbolName,
-        symbolType,
-        startLine,
-        endLine
-    );
+    await insertSymbolSQL(fileId, symbolName, symbolType, startLine, endLine);
     console.log(`Inserted symbol ${symbolName} of type ${symbolType} into database`);
     // embedding text (VERY IMPORTANT IMPROVEMENT vs your old version)
     const embeddingInput =
@@ -599,47 +632,53 @@ function sha256(input: string) {
  * ---------------------------
  */
 
-const getEmbeddingsStmt = db.prepare(`
-    SELECT path, chunk_index, embedding FROM embeddings
-`);
-
-const saveEmbeddingStmt = db.prepare(`
-    REPLACE INTO embeddings (path, chunk_index, hash, embedding)
-    VALUES (?, ?, ?, ?)
-`);
-
-const deleteEmbeddingStmt = db.prepare(`
-    DELETE FROM embeddings WHERE path = ?
-`);
-
-const deleteEmbeddingChunkStmt = db.prepare(`
-    DELETE FROM embeddings WHERE path = ? AND chunk_index >= ?
-`);
-
-function getEmbeddingsList(): Record<string, number[]> {
-    const rows = getAllChunks.all() as any[];
+async function getEmbeddingsList(): Promise<Record<string, number[]>> {
+    const rows = await getAllChunksSQL();
     const result: Record<string, number[]> = {};
     for (const row of rows) {
-        result[`${row.id}`] = JSON.parse(row.embedding);
+        try {
+            result[`${row.id}`] = JSON.parse(row.embedding);
+        } catch (e) {
+            result[`${row.id}`] = [];
+        }
     }
     return result;
 }
 
-function saveEmbedding(path: string, chunkIndex: number, hash: string, embedding: number[]) {
-    saveEmbeddingStmt.run(path, chunkIndex, hash, JSON.stringify(embedding));
+async function saveEmbedding(pathStr: string, chunkIndex: number, hash: string, embedding: number[]) {
+    await initDatabase();
+    const stmt = db.prepare(`REPLACE INTO embeddings (path, chunk_index, hash, embedding) VALUES (?, ?, ?, ?)`);
+    stmt.bind([pathStr, chunkIndex, hash, JSON.stringify(embedding)]);
+    stmt.step();
+    stmt.free();
+    persistDb();
 }
 
-function deleteEmbeddingsByPath(path: string) {
-    deleteEmbeddingStmt.run(path);
+async function deleteEmbeddingsByPath(pathStr: string) {
+    await initDatabase();
+    const stmt = db.prepare(`DELETE FROM embeddings WHERE path = ?`);
+    stmt.bind([pathStr]);
+    stmt.step();
+    stmt.free();
+    persistDb();
 }
 
-function deleteEmbeddingsFromChunk(path: string, startChunk: number) {
-    deleteEmbeddingChunkStmt.run(path, startChunk);
+async function deleteEmbeddingsFromChunk(pathStr: string, startChunk: number) {
+    await initDatabase();
+    const stmt = db.prepare(`DELETE FROM embeddings WHERE path = ? AND chunk_index >= ?`);
+    stmt.bind([pathStr, startChunk]);
+    stmt.step();
+    stmt.free();
+    persistDb();
 }
 
-function getEmbeddingsByPath(path: string): Array<{ chunk_index: number; hash: string; embedding: number[] }> {
+async function getEmbeddingsByPath(pathStr: string): Promise<Array<{ chunk_index: number; hash: string; embedding: number[] }>> {
+    await initDatabase();
     const stmt = db.prepare(`SELECT chunk_index, hash, embedding FROM embeddings WHERE path = ?`);
-    const rows = stmt.all(path) as any[];
+    stmt.bind([pathStr]);
+    const rows: any[] = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    stmt.free();
     return rows.map(row => ({
         chunk_index: row.chunk_index,
         hash: row.hash,
@@ -647,13 +686,16 @@ function getEmbeddingsByPath(path: string): Array<{ chunk_index: number; hash: s
     }));
 }
 
-function getAllSymbols(): Array<{ name: string; type: string; path: string; startLine: number; endLine: number }> {
+async function getAllSymbols(): Promise<Array<{ name: string; type: string; path: string; startLine: number; endLine: number }>> {
+    await initDatabase();
     const stmt = db.prepare(`
         SELECT s.name, s.type, s.start_line, s.end_line, f.path
         FROM symbols s
         JOIN files f ON f.id = s.file_id
     `);
-    const rows = stmt.all() as any[];
+    const rows: any[] = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    stmt.free();
     return rows.map(row => ({
         name: row.name,
         type: row.type,
@@ -663,7 +705,8 @@ function getAllSymbols(): Array<{ name: string; type: string; path: string; star
     }));
 }
 
-function getSymbolsByPaths(paths: string[]): Array<{ name: string; type: string; path: string; startLine: number; endLine: number }> {
+async function getSymbolsByPaths(paths: string[]): Promise<Array<{ name: string; type: string; path: string; startLine: number; endLine: number }>> {
+    await initDatabase();
     if (paths.length === 0) {
         return [];
     }
@@ -675,7 +718,10 @@ function getSymbolsByPaths(paths: string[]): Array<{ name: string; type: string;
         JOIN files f ON f.id = s.file_id
         WHERE f.path IN (${placeholders})
     `);
-    const rows = stmt.all(...paths) as any[];
+    stmt.bind(paths);
+    const rows: any[] = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    stmt.free();
     return rows.map(row => ({
         name: row.name,
         type: row.type,
@@ -685,13 +731,17 @@ function getSymbolsByPaths(paths: string[]): Array<{ name: string; type: string;
     }));
 }
 
-function getRelatedSymbolsByPaths(paths: string[]): Array<{ name: string; type: string; path: string }> {
-    const symbols = getSymbolsByPaths(paths);
+async function getRelatedSymbolsByPaths(paths: string[]): Promise<Array<{ name: string; type: string; path: string }>> {
+    const symbols = await getSymbolsByPaths(paths);
     return symbols.map(({ name, type, path }) => ({ name, type, path }));
 }
 
-export function getAllFiles(){
-    const rows = getAllDBFiles.all() as any[];
+export async function getAllFiles(){
+    await initDatabase();
+    const stmt = db.prepare(`SELECT path, language, modified_time FROM files`);
+    const rows: any[] = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    stmt.free();
     return rows.map(row => ({
         path: row.path,
         language: row.language,
@@ -699,8 +749,8 @@ export function getAllFiles(){
     }));
 }
 
-export function getChunkById(id:any){
-    const row = getDBChunkById.get(id) as any;
+export async function getChunkById(id:any){
+    const row = await getDBChunkByIdSQL(id) as any;
     if (!row) return null;
     return {
         id: row.id,

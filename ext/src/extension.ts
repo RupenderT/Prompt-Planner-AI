@@ -7,7 +7,7 @@ import {
     scanDirectory,
     createEmbedding,
     getEmbeddingsList,
-    saveEmbedding,
+    saveEmbedding,      
     deleteEmbeddingsByPath,
     deleteEmbeddingsFromChunk,
     getEmbeddingsByPath,
@@ -15,7 +15,8 @@ import {
     getRelatedSymbolsByPaths,
     printTableCounts,
     getAllFiles,
-    getChunkById
+    getChunkById,
+    setStoragePath
 } from './indexing.js';
 
 
@@ -42,7 +43,7 @@ async function getRelevantEmbaddings(
     const queryEmbedding = await createEmbedding(query);
 
     // 2. Load embeddings from DB (instead of only cache)
-    const embeddings = getEmbeddingsList(); // { "path:chunkIndex": number[] }
+    const embeddings = await getEmbeddingsList(); // { "path:chunkIndex": number[] }
 
     // 3. Score each chunk
     const scoredChunks = Object.entries(embeddings)
@@ -54,9 +55,9 @@ async function getRelevantEmbaddings(
         .slice(0, topK);
 
     // 4. Normalize result
-    return scoredChunks.map(chunk => {
+    const results = await Promise.all(scoredChunks.map(async chunk => {
         const id = chunk.key;
-        const savedChunk = getChunkById(id) as any;
+        const savedChunk = await getChunkById(id) as any;
         const chunkText = readChunkText(savedChunk.path, savedChunk.start_line, savedChunk.end_line);
         return {
             path: path.basename(savedChunk.path),
@@ -67,7 +68,8 @@ async function getRelevantEmbaddings(
             symbol_name: savedChunk.symbol_name,
             symbol_type: savedChunk.symbol_type
         };
-    });
+    }));
+    return results;
 }
 
 function readChunkText(path: string, startLine: number, endLine: number): string {
@@ -82,22 +84,33 @@ function readChunkText(path: string, startLine: number, endLine: number): string
 
 
 async function loadEmbeddingsCache() {
-    embeddingsCache = getEmbeddingsList();
+    embeddingsCache = await getEmbeddingsList();
     console.log(`Loaded ${Object.keys(embeddingsCache).length} chunk embeddings from DB`);
 }
 export async function activate(context: vscode.ExtensionContext) {
+    // Set storage path for database
+    const projectRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+    const storagePath = projectRoot || context.globalStorageUri.fsPath;
+    
+    // Ensure storage directory exists
+    if (!projectRoot && !fs.existsSync(storagePath)) {
+        fs.mkdirSync(storagePath, { recursive: true });
+    }
+    
+    setStoragePath(storagePath);
+    
     // Register UI command immediately
-    const uiCommand = vscode.commands.registerCommand('planner-ai.showUI', () => {
-        showPlannerUI(context);
+    const uiCommand = vscode.commands.registerCommand('planner-ai.showUI', async () => {
+        await showPlannerUI(context);
     });
     context.subscriptions.push(uiCommand);
 
     // Schedule cache load + indexing AFTER activation
     setTimeout(async () => {
         try {
-            printTableCounts();
-            const projectRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath || process.cwd();
-            await scanDirectory(projectRoot);
+            await printTableCounts();
+            const scanRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath || process.cwd();
+            await scanDirectory(scanRoot);
 
             vscode.window.showInformationMessage("Planner AI indexing complete");
             await loadEmbeddingsCache();
@@ -113,16 +126,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
     vscode.workspace.onDidDeleteFiles(async event => {
         for (const file of event.files) {
-            deleteEmbeddingsByPath(file.fsPath);
+            await deleteEmbeddingsByPath(file.fsPath);
             Object.keys(embeddingsCache).forEach(key => {
                 if (key.startsWith(file.fsPath + ":")) delete embeddingsCache[key];
             });
         }
-        updateUIFiles();
+        await updateUIFiles();
     });
 }
 
-function showPlannerUI(context: vscode.ExtensionContext) {
+async function showPlannerUI(context: vscode.ExtensionContext) {
     if (panel) {
         panel.reveal(vscode.ViewColumn.One);
         return;
@@ -159,7 +172,7 @@ function showPlannerUI(context: vscode.ExtensionContext) {
         }
     });
 
-    updateUIFiles();
+    await updateUIFiles();
 }
 
 function getWebviewContent(): string {
@@ -216,10 +229,11 @@ function getWebviewContent(): string {
     `;
 }
 
-function updateUIFiles() {
+async function updateUIFiles() {
     if (panel) {
-        console.log("embeddingsCache keys:", getAllFiles().map(f => f.path));
-        panel.webview.postMessage({ type: 'filesIndexed', files: getAllFiles() });
+        const files = await getAllFiles();
+        console.log("embeddingsCache keys:", files.map(f => f.path));
+        panel.webview.postMessage({ type: 'filesIndexed', files });
     }
 }
 
