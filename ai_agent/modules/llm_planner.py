@@ -4,7 +4,7 @@ from langchain_ollama import OllamaLLM
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-ollama = OllamaLLM(model="mistral", base_url="http://localhost:11434")
+ollama = OllamaLLM(model="codellama:7b", base_url="http://localhost:11434")
 
 class LLMPlanner:
     def run(self, state: Dict) -> Dict:
